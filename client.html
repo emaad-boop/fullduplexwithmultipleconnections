@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>MindCare — Biometric Engagement Monitor</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 30px;
+        }
+        .container {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 40px;
+            margin-top: 20px;
+        }
+        .panel {
+            background-color: #1a1a1a;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #streamView {
+            border: 3px solid #00ffaa;
+            border-radius: 4px;
+            width: 480px;
+            height: 360px;
+            background-color: #000;
+        }
+        #faceView {
+            border: 3px solid #00aaff;
+            border-radius: 4px;
+            width: 180px;
+            height: 180px;
+            background-color: #000;
+            object-fit: cover;
+            margin-bottom: 15px;
+        }
+        .status {
+            font-weight: bold;
+            color: #00ffaa;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+        /* Metrics Dashboard Bar for Judges */
+        .metrics-bar {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin: 15px auto;
+            max-width: 700px;
+            background: #222;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #333;
+        }
+        .metric-box {
+            text-align: center;
+        }
+        .metric-val {
+            font-size: 1.6em;
+            font-weight: bold;
+            color: #00ffaa;
+        }
+        .metric-lbl {
+            font-size: 0.8em;
+            color: #aaa;
+        }
+        .download-btn {
+            background-color: #00aaff;
+            color: #fff;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            opacity: 0.4;
+            pointer-events: none;
+        }
+        .download-btn.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .download-btn:hover {
+            background-color: #0088cc;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>MindCare Cognitive Monitoring Node</h2>
+    <div id="connectionStatus" class="status">Connecting to Processing Core...</div>
+
+    <!-- Live Stats Bar to Showcase to Judges -->
+    <div class="metrics-bar">
+        <div class="metric-box">
+            <div id="attentionClock" class="metric-val">0.0s</div>
+            <div class="metric-lbl">Active Engagement Time</div>
+        </div>
+        <div class="metric-box">
+            <div id="trackingState" class="metric-val" style="color: #ff5555;">Idle</div>
+            <div class="metric-lbl">Patient State</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h3>Automated Observation Stream</h3>
+            <img id="streamView" alt="Live processed feed container">
+        </div>
+        <div class="panel">
+            <h3>Memory Vault Snippet</h3>
+            <img id="faceView" alt="No face detected yet">
+            <button id="downloadBtn" class="download-btn">Save to Profile</button>
+        </div>
+    </div>
+
+    <video id="rawVideo" autoplay playsinline style="display: none;"></video>
+    <canvas id="hiddenCanvas" width="320" height="240" style="display: none;"></canvas>
+
+    <script>
+        const socket = new WebSocket("ws://127.0.0.1:8766");
+
+        const video = document.getElementById('rawVideo');
+        const canvas = document.getElementById('hiddenCanvas');
+        const context = canvas.getContext('2d');
+
+        const streamImg = document.getElementById('streamView');
+        const faceImg = document.getElementById('faceView');
+        const statusDiv = document.getElementById('connectionStatus');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        // Metrics UI Hooks
+        const attentionClockDiv = document.getElementById('attentionClock');
+        const trackingStateDiv = document.getElementById('trackingState');
+
+        let latestFaceBase64 = "";
+        let isWaitingForServer = false;
+
+        // Dynamic Biometric Time Variables
+        let totalAttentionTime = 0.0;
+        let lastTimestamp = performance.now();
+
+        navigator.mediaDevices.getUserMedia({
+            video: { width: 320, height: 240, facingMode: "user" },
+            audio: false
+        })
+        .then(stream => {
+            video.srcObject = stream;
+            video.play();
+            video.addEventListener('play', () => {
+                lastTimestamp = performance.now();
+                requestAnimationFrame(processTransmissionLoop);
+            });
+        })
+        .catch(err => {
+            statusDiv.textContent = "ERROR: Camera initialization failed.";
+            statusDiv.style.color = "#FF5555";
+        });
+
+        function processTransmissionLoop() {
+            if (socket.readyState === WebSocket.OPEN && video.readyState === video.HAVE_ENOUGH_DATA && !isWaitingForServer) {
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.4);
+                const base64Data = dataUrl.split(',')[1];
+
+                if (base64Data.length > 1) {
+                    isWaitingForServer = true;
+                    socket.send(JSON.stringify({ image: base64Data }));
+                }
+            }
+            requestAnimationFrame(processTransmissionLoop);
+        }
+
+        socket.onopen = () => {
+            statusDiv.textContent = "SYSTEM ACTIVE: Biometric Ingest Live";
+            statusDiv.style.color = "#00ffaa";
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const now = performance.now();
+            const deltaSeconds = (now - lastTimestamp) / 1000;
+            lastTimestamp = now;
+
+            if (data.image) {
+                streamImg.src = "data:image/jpeg;base64," + data.image;
+            }
+
+            // BIOMETRIC TRACKING LOGIC: If a face is returned, accumulate attention metrics dynamically
+            if (data.face_detected === true) {
+                totalAttentionTime += deltaSeconds;
+                attentionClockDiv.textContent = totalAttentionTime.toFixed(1) + "s";
+                trackingStateDiv.textContent = "Engaged";
+                trackingStateDiv.style.color = "#00ffaa";
+            } else {
+                trackingStateDiv.textContent = "Unfocused";
+                trackingStateDiv.style.color = "#ffaa00";
+            }
+
+            if (data.face) {
+                latestFaceBase64 = data.face;
+                faceImg.src = "data:image/jpeg;base64," + data.face;
+                downloadBtn.classList.add('active');
+            }
+
+            isWaitingForServer = false;
+        };
+
+        socket.onclose = () => {
+            statusDiv.textContent = "DISCONNECTED: Processing stream severed.";
+            statusDiv.style.color = "#FF5555";
+            downloadBtn.classList.remove('active');
+            isWaitingForServer = false;
+        };
+
+        downloadBtn.addEventListener('click', () => {
+            if (!latestFaceBase64) return;
+            const link = document.createElement('a');
+            link.href = "data:image/jpeg;base64," + latestFaceBase64;
+            link.download = `MindCare_Snapshot_${Math.floor(Date.now()/1000)}.jpg`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    </script>
+</body>
+</html>
